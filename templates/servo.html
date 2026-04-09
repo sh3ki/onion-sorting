@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ app_name }} - Servo Control</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <style>
+    .servo-btn {
+      transition: transform 90ms ease, box-shadow 90ms ease, filter 120ms ease;
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+      will-change: transform;
+    }
+
+    .servo-btn:hover {
+      filter: brightness(1.04);
+    }
+
+    .servo-btn.is-pressed,
+    .servo-btn:active {
+      transform: translateY(2px) scale(0.985);
+      box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18);
+      filter: brightness(0.96);
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-main">
+      <div>
+        <h1>{{ app_name }} - Manual Servo Control</h1>
+        <p>Manual one-cycle swing control for servo testing</p>
+      </div>
+      <a href="/" class="exit-btn" style="text-decoration:none;display:inline-block;line-height:1.2;">Back to Dashboard</a>
+    </div>
+    <div class="hint topbar-hint">Cycle profile: 120deg CCW first, 150ms pause, then 120deg CW. Minimum 200ms between cycles per servo.</div>
+  </header>
+
+  <main class="layout" style="max-width:820px;margin:0 auto;">
+    <section class="panel status-panel">
+      <h2>Servo Test Buttons</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <button id="servo1Btn" class="servo-btn" type="button">Run Servo 1 Cycle</button>
+        <button id="servo2Btn" class="servo-btn" type="button">Run Servo 2 Cycle</button>
+      </div>
+      <div id="servoStatus" class="hint" style="margin-top:12px;">Ready.</div>
+      <div class="hint" style="margin-top:8px;">Open this page at /servo on the Pi to test motors directly.</div>
+    </section>
+  </main>
+
+  <script>
+    async function runServoCycle(servoKey) {
+      const statusEl = document.getElementById('servoStatus');
+      statusEl.textContent = `Sending ${servoKey} cycle request...`;
+      try {
+        const res = await fetch(`/api/servo/${servoKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok || payload.ok === false) {
+          statusEl.textContent = `${servoKey}: ${payload.message ?? 'request failed'}`;
+          return;
+        }
+        statusEl.textContent = `${servoKey}: ${payload.message ?? 'cycle accepted'}`;
+      } catch {
+        statusEl.textContent = `${servoKey}: request error.`;
+      }
+    }
+
+    function attachPressEffect(button) {
+      const press = () => button.classList.add('is-pressed');
+      const release = () => button.classList.remove('is-pressed');
+
+      button.addEventListener('pointerdown', press);
+      button.addEventListener('pointerup', release);
+      button.addEventListener('pointerleave', release);
+      button.addEventListener('pointercancel', release);
+      button.addEventListener('blur', release);
+    }
+
+    const servo1Btn = document.getElementById('servo1Btn');
+    const servo2Btn = document.getElementById('servo2Btn');
+    attachPressEffect(servo1Btn);
+    attachPressEffect(servo2Btn);
+
+    servo1Btn.addEventListener('click', () => runServoCycle('servo1'));
+    servo2Btn.addEventListener('click', () => runServoCycle('servo2'));
+  </script>
+</body>
+</html>
