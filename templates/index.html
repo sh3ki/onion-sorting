@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-main">
+      <div>
+        <h1>{{ app_name }}</h1>
+        <p>Dashboard view with in-app calibration controls</p>
+      </div>
+      <button id="exitBtn" class="exit-btn" type="button">Close Program</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel stream-panel">
+      <h2>Live Streams (50/50)</h2>
+
+      <div class="stream-grid">
+        <div class="stream-card">
+          <h3>Stage 1 Camera (USB)</h3>
+          <img id="liveStage1" src="/video_feed_stage1" alt="Stage 1 onion sorting stream" />
+          <div class="cal-row">
+            <button id="calibrateBtn1" type="button">Calibrate Stage 1 (20 fixed samples)</button>
+            <button id="cancelCalibrateBtn1" class="cancel-btn" type="button">Cancel Calibration</button>
+          </div>
+          <div id="calStatus1" class="hint">Stage 1: idle.</div>
+        </div>
+
+        <div class="stream-card">
+          <h3>Stage 2 Camera (CSI)</h3>
+          <img id="liveStage2" src="/video_feed_stage2" alt="Stage 2 onion sorting stream" />
+          <div class="cal-row">
+            <button id="calibrateBtn2" type="button">Calibrate Stage 2 (20 fixed samples)</button>
+            <button id="cancelCalibrateBtn2" class="cancel-btn" type="button">Cancel Calibration</button>
+          </div>
+          <div id="calStatus2" class="hint">Stage 2: idle.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel status-panel">
+      <h2>System Information</h2>
+      <div class="grid">
+        <div class="card"><span>Mode</span><strong id="mode">-</strong></div>
+        <div class="card"><span>FPS</span><strong id="fps">-</strong></div>
+        <div class="card"><span>Large</span><strong id="countLarge">-</strong></div>
+        <div class="card"><span>Medium</span><strong id="countMedium">-</strong></div>
+        <div class="card"><span>Small</span><strong id="countSmall">-</strong></div>
+        <div class="card"><span>Servo 1</span><strong id="servo1">-</strong></div>
+        <div class="card"><span>Servo 2</span><strong id="servo2">-</strong></div>
+        <div class="card"><span>Stage 1 Class</span><strong id="stage1Class">-</strong></div>
+        <div class="card"><span>Stage 1 cm</span><strong id="stage1Cm">-</strong></div>
+        <div class="card"><span>Stage 2 Class</span><strong id="stage2Class">-</strong></div>
+        <div class="card"><span>Stage 2 cm</span><strong id="stage2Cm">-</strong></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    async function refreshStatus() {
+      try {
+        const res = await fetch('/api/status', { cache: 'no-store' });
+        if (!res.ok) return;
+        const s = await res.json();
+
+        document.getElementById('mode').textContent = s.mode ?? '-';
+        document.getElementById('fps').textContent = s.fps ?? '-';
+        document.getElementById('countLarge').textContent = s.counts?.large ?? '-';
+        document.getElementById('countMedium').textContent = s.counts?.medium ?? '-';
+        document.getElementById('countSmall').textContent = s.counts?.small ?? '-';
+
+        document.getElementById('servo1').textContent = s.servo?.servo1 ?? '-';
+        document.getElementById('servo2').textContent = s.servo?.servo2 ?? '-';
+
+        document.getElementById('stage1Class').textContent = s.stage1?.class ?? '-';
+        document.getElementById('stage1Cm').textContent = s.stage1?.diameter_cm ?? '-';
+        document.getElementById('stage2Class').textContent = s.stage2?.class ?? '-';
+        document.getElementById('stage2Cm').textContent = s.stage2?.diameter_cm ?? '-';
+
+        const c1 = s.calibration_stage1 ?? {};
+        const c2 = s.calibration_stage2 ?? {};
+        const p1 = `${c1.samples_collected ?? 0}/${c1.sample_target ?? 0}`;
+        const p2 = `${c2.samples_collected ?? 0}/${c2.sample_target ?? 0}`;
+
+        document.getElementById('calStatus1').textContent = `${c1.message ?? 'Stage 1: idle.'} (samples: ${p1})`;
+        document.getElementById('calStatus2').textContent = `${c2.message ?? 'Stage 2: idle.'} (samples: ${p2})`;
+
+        document.getElementById('calibrateBtn1').disabled = Boolean(c1.active);
+        document.getElementById('cancelCalibrateBtn1').disabled = !Boolean(c1.active);
+        document.getElementById('calibrateBtn2').disabled = Boolean(c2.active);
+        document.getElementById('cancelCalibrateBtn2').disabled = !Boolean(c2.active);
+      } catch (err) {
+      }
+    }
+
+    async function startCalibration(stage) {
+      const statusId = stage === 1 ? 'calStatus1' : 'calStatus2';
+
+      try {
+        const res = await fetch(`/api/calibrate_stage${stage}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        if (!res.ok) {
+          document.getElementById(statusId).textContent = `Stage ${stage}: calibration request failed.`;
+          return;
+        }
+        const data = await res.json();
+        document.getElementById(statusId).textContent = data.message ?? `Stage ${stage}: calibration requested.`;
+      } catch {
+        document.getElementById(statusId).textContent = `Stage ${stage}: calibration request error.`;
+      }
+    }
+
+    async function cancelCalibration(stage) {
+      const statusId = stage === 1 ? 'calStatus1' : 'calStatus2';
+
+      try {
+        const res = await fetch(`/api/calibrate_stage${stage}_cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        if (!res.ok) {
+          document.getElementById(statusId).textContent = `Stage ${stage}: cancel request failed.`;
+          return;
+        }
+        const data = await res.json();
+        document.getElementById(statusId).textContent = data.message ?? `Stage ${stage}: cancel requested.`;
+      } catch {
+        document.getElementById(statusId).textContent = `Stage ${stage}: cancel request error.`;
+      }
+    }
+
+    async function stopProgram() {
+      try {
+        document.getElementById('exitStatus').textContent = 'Sending close request...';
+        const res = await fetch('/api/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        if (!res.ok) {
+          document.getElementById('exitStatus').textContent = 'Stop request failed.';
+          return;
+        }
+        document.getElementById('exitStatus').textContent = 'Close requested. App stopping...';
+        setTimeout(() => {
+          window.close();
+        }, 500);
+      } catch {
+        document.getElementById('exitStatus').textContent = 'Stop request error.';
+      }
+    }
+
+    document.getElementById('calibrateBtn1').addEventListener('click', () => startCalibration(1));
+    document.getElementById('cancelCalibrateBtn1').addEventListener('click', () => cancelCalibration(1));
+    document.getElementById('calibrateBtn2').addEventListener('click', () => startCalibration(2));
+    document.getElementById('cancelCalibrateBtn2').addEventListener('click', () => cancelCalibration(2));
+    document.getElementById('exitBtn').addEventListener('click', stopProgram);
+
+    setInterval(refreshStatus, 500);
+    refreshStatus();
+  </script>
+</body>
+</html>
