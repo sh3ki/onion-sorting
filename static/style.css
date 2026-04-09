@@ -1,0 +1,210 @@
+:root {
+  --bg: #0f1419;
+  --panel: #1a2330;
+  --panel-2: #253447;
+  --text: #e5edf5;
+  --muted: #9bb0c8;
+  --accent: #f7b538;
+  --ok: #27c17e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at top left, #1f2f45 0%, #0f1419 50%);
+  color: var(--text);
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  min-height: 100vh;
+  overflow: auto;
+}
+
+.topbar {
+  padding: 10px 14px 6px;
+  border-bottom: 1px solid #2a3c53;
+}
+
+.topbar-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.topbar-hint {
+  margin-top: 4px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.topbar p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.layout {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  height: auto;
+  overflow: visible;
+}
+
+.panel {
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 1px solid #2f4560;
+  border-radius: 10px;
+  padding: 8px;
+  overflow: visible;
+}
+
+.status-panel {
+  max-height: none;
+  overflow: visible;
+}
+
+.stream-panel {
+  height: auto;
+  overflow: visible;
+}
+
+.panel h2 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+  color: var(--accent);
+}
+
+.stream-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.stream-card {
+  background: #0f1722;
+  border: 1px solid #2e3c4f;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.stream-card h3 {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  color: var(--accent);
+}
+
+#liveStage1,
+#liveStage2 {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  background: #0a1018;
+  border-radius: 8px;
+  border: 1px solid #3d566f;
+}
+
+.cal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cal-row label {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.cal-row input {
+  width: 72px;
+  background: #0f1722;
+  color: var(--text);
+  border: 1px solid #3a4a5f;
+  border-radius: 6px;
+  padding: 6px;
+}
+
+.cal-row button {
+  background: #f7b538;
+  color: #14212e;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cal-row .cancel-btn {
+  background: #33485e;
+  color: #e5edf5;
+}
+
+.cal-row button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hint {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.exit-btn {
+  background: #d44c4c;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.card {
+  background: #0f1722;
+  border: 1px solid #2e3c4f;
+  border-radius: 7px;
+  padding: 8px;
+  min-height: 54px;
+}
+
+.card span {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.card strong {
+  display: block;
+  font-size: 1.02rem;
+  color: var(--ok);
+}
+
+@media (max-width: 980px) {
+  body {
+    overflow: auto;
+    height: auto;
+  }
+
+  .layout {
+    height: auto;
+  }
+
+  .stream-grid {
+    grid-template-columns: 1fr;
+  }
+}
