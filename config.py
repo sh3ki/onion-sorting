@@ -11,13 +11,20 @@ ENABLE_WEB_DASHBOARD = True
 # Flask dashboard settings
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 5000
-WEB_STREAM_MAX_FPS = 12
-WEB_JPEG_QUALITY = 70
+WEB_STREAM_MAX_FPS = 8
+WEB_JPEG_QUALITY = 60
+
+# Run diameter detection on every Nth frame during normal operation.
+DETECTION_EVERY_N_FRAMES = 2
 
 # Camera capture settings
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
-TARGET_FPS = 30
+TARGET_FPS = 15
+
+# Reconnect behavior for USB camera hot-unplug/replug.
+STAGE2_REOPEN_AFTER_FAILS = 5
+STAGE2_RECONNECT_INTERVAL_SEC = 2.0
 
 # Keep camera field-of-view stable (no digital zoom).
 LOCK_CAMERA_FOV = True
@@ -34,9 +41,9 @@ DISPLAY_HEIGHT = 600
 # - Use "picamera2" for Raspberry Pi CSI camera.
 # - Use integer index (0, 1, 2, ...) for USB webcams.
 # - Use "gstreamer:<pipeline>" for custom CSI pipelines.
-STAGE1_SOURCE = 1
-STAGE2_SOURCE = "picamera2"
-STAGE2_OPTIONAL = True
+STAGE1_SOURCE = "/dev/v4l/by-id/usb-046d_0825_2006F420-video-index0"
+STAGE2_SOURCE = "/dev/v4l/by-id/usb-XSW_200819_SPCA2650_AV_Camera_01.00.00-video-index0"
+STAGE2_OPTIONAL = False
 
 # Backend names: default, v4l2, gstreamer, ffmpeg, any
 STAGE1_BACKEND = "default"
@@ -49,10 +56,21 @@ STAGE2_ROI = None
 # Shared vision preprocessing settings
 BLUR_KERNEL_SIZE = 5
 MORPH_KERNEL_SIZE = 5
-MIN_CONTOUR_AREA = 500
-CIRCULARITY_MIN = 0.60
-CIRCULARITY_MAX = 1.20
+MIN_CONTOUR_AREA = 300  # Lowered to catch smaller onions
+CIRCULARITY_MIN = 0.55  # Relaxed for real onion irregularities
+CIRCULARITY_MAX = 1.30  # Allow slightly non-circular shapes
 THRESHOLD_INVERT = True
+ONION_HUE1_MIN = 0
+ONION_HUE1_MAX = 18
+ONION_HUE2_MIN = 125
+ONION_HUE2_MAX = 179
+ONION_SAT_MIN = 32
+ONION_MIN_VALUE = 30
+ONION_GLARE_VALUE_MIN = 235
+ONION_MAX_CONTOUR_AREA_RATIO = 0.35
+ONION_MAX_ASPECT_RATIO = 2.20
+ONION_MIN_SOLIDITY = 0.75
+ONION_MIN_FILL_RATIO = 0.35
 
 # Trigger line settings inside each ROI
 # ratio is from 0.0 to 1.0 in the trigger axis direction
@@ -69,8 +87,8 @@ STAGE2_TRIGGER_COOLDOWN_SEC = 0.70
 # Onion classes requested by user
 SMALL_MAX_CM = 3.8
 MEDIUM_MIN_CM = 3.8
-MEDIUM_MAX_CM = 6.0
-LARGE_GT_CM = 6.0
+MEDIUM_MAX_CM = 5.0
+LARGE_GT_CM = 5.0
 
 # Delay from detection line to servo gate
 # stage1: 20 cm / 8.5 cm/s ~= 2.35 s
@@ -125,29 +143,29 @@ AUTO_SERVO_FROM_DETECTION = False
 # One cycle: move CCW first, short pause, then move CW.
 MANUAL_SERVO_CCW_ANGLE = 0
 MANUAL_SERVO_CW_ANGLE = 180
-MANUAL_SERVO_PHASE_PAUSE_SEC = 0.15
+MANUAL_SERVO_PHASE_PAUSE_SEC = 0.30
 MANUAL_SERVO_MIN_INTERVAL_SEC = 0.20
 
 # Physical tactile push-button inputs for manual servo triggering.
 # Wire each button between the GPIO pin and GND (active-low with internal pull-up).
 MANUAL_BUTTONS_ENABLED = True
-MANUAL_BUTTON_SERVO1_PIN = 17
+MANUAL_BUTTON_SERVO1_PIN = 18
 MANUAL_BUTTON_SERVO2_PIN = 27
 MANUAL_BUTTON_ACTIVE_LOW = True
 MANUAL_BUTTON_DEBOUNCE_SEC = 0.20
 
 # Calibration settings
-COIN_DIAMETER_CM = 2.5  # New 5-peso coin = 25 mm
+COIN_DIAMETER_CM = 2.7  # 20-peso coin = 27 mm
 CALIBRATION_STAGE1_FILE = BASE_DIR / "calibration_stage1.json"
 CALIBRATION_STAGE2_FILE = BASE_DIR / "calibration_stage2.json"
-DEFAULT_PIXELS_PER_CM_STAGE1 = 45.0
-DEFAULT_PIXELS_PER_CM_STAGE2 = 45.0
+DEFAULT_PIXELS_PER_CM_STAGE1 = 38.4
+DEFAULT_PIXELS_PER_CM_STAGE2 = 37.4
 
 # Conveyor speed used during runtime measurement.
 CONVEYOR_SPEED_CM_PER_SEC = 8.5
 
 # In-app calibration settings (Stage 1 button in dashboard)
-CALIBRATION_TARGET_SAMPLES = 20
+CALIBRATION_TARGET_SAMPLES = 7
 CALIBRATION_MIN_SAMPLE_INTERVAL_SEC = 0.20
 CALIBRATION_MAX_DURATION_SEC = 45.0
 CALIBRATION_COIN_MIN_RADIUS_PX = 12
@@ -159,6 +177,12 @@ CALIBRATION_COIN_MAX_FILL_RATIO = 1.22
 CALIBRATION_COIN_EDGE_MARGIN_RATIO = 1.25
 CALIBRATION_COIN_MAX_CENTER_SHIFT_PX = 10.0
 CALIBRATION_COIN_MAX_DIAMETER_DELTA_PX = 4.0
+CALIBRATION_COIN_MAX_ASPECT_RATIO = 2.30
+CALIBRATION_COIN_MIN_SOLIDITY = 0.72
+CALIBRATION_GLARE_VALUE_MIN = 235
+CALIBRATION_GAUSSIAN_KERNEL = 5
+CALIBRATION_MORPH_KERNEL = 5
+CALIBRATION_OUTLIER_SIGMA = 2.20
 
 # Temporal smoothing for moving onions.
 DIAMETER_SMOOTHING_FRAMES = 6
