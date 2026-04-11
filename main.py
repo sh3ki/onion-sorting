@@ -40,18 +40,44 @@ def load_pixels_per_cm(path: Path, fallback: float) -> float:
         return fallback
 
 
+def _deviation_filter_samples(samples_px):
+    if not samples_px:
+        return []
+    if len(samples_px) <= 2:
+        return [float(v) for v in samples_px]
+
+    values = np.array(samples_px, dtype=np.float32)
+    center = float(np.median(values))
+    mad = float(np.median(np.abs(values - center)))
+    if mad <= 1e-6:
+        return [float(v) for v in values]
+
+    robust_sigma = 1.4826 * mad
+    sigma_k = float(getattr(config, "CALIBRATION_OUTLIER_SIGMA", 2.2))
+    keep = np.abs(values - center) <= (sigma_k * robust_sigma)
+    filtered = values[keep]
+    if len(filtered) < max(3, len(values) - 2):
+        return [float(v) for v in values]
+    return [float(v) for v in filtered]
+
+
 def save_stage1_calibration(path: Path, samples_px):
-    avg_px = mean(samples_px)
-    std_px = pstdev(samples_px) if len(samples_px) > 1 else 0.0
-    pixels_per_cm = avg_px / config.COIN_DIAMETER_CM
+    filtered_px = _deviation_filter_samples(samples_px)
+    avg_px = mean(filtered_px)
+    std_px = pstdev(filtered_px) if len(filtered_px) > 1 else 0.0
+    cm_per_pixel = config.COIN_DIAMETER_CM / avg_px
+    pixels_per_cm = 1.0 / cm_per_pixel
 
     payload = {
         "pixels_per_cm": round(pixels_per_cm, 6),
+        "cm_per_pixel": round(cm_per_pixel, 8),
         "coin_diameter_cm": config.COIN_DIAMETER_CM,
         "coin_diameter_mm": int(config.COIN_DIAMETER_CM * 10),
-        "sample_count": len(samples_px),
+        "sample_count": len(filtered_px),
+        "raw_sample_count": len(samples_px),
         "mean_coin_diameter_px": round(avg_px, 4),
         "std_coin_diameter_px": round(std_px, 4),
+        "filtered_out": int(max(0, len(samples_px) - len(filtered_px))),
         "created_at": datetime.utcnow().isoformat() + "Z",
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -60,32 +86,38 @@ def save_stage1_calibration(path: Path, samples_px):
 
 def detect_coin_candidate(frame_bgr):
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    blur_k = max(3, int(getattr(config, "CALIBRATION_GAUSSIAN_KERNEL", 5)))
+    if blur_k % 2 == 0:
+        blur_k += 1
+    gray = cv2.GaussianBlur(gray, (blur_k, blur_k), 0)
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    h, w = gray.shape[:2]
 
-    thresh = cv2.adaptiveThreshold(
-        gray,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        31,
-        7,
-    )
+    _, mask_gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    glare_min = int(getattr(config, "CALIBRATION_GLARE_VALUE_MIN", 235))
+    mask_glare = cv2.inRange(hsv[:, :, 2], glare_min, 255)
+    mask = cv2.bitwise_or(mask_gray, mask_glare)
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mk = max(3, int(getattr(config, "CALIBRATION_MORPH_KERNEL", 5)))
+    if mk % 2 == 0:
+        mk += 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (mk, mk))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
 
-    h, w = gray.shape[:2]
     best = None
-    best_score = -1.0
+    best_score = -1e9
+    max_area = float(h * w) * 0.45
 
     for contour in contours:
         area = cv2.contourArea(contour)
         if area < float(config.CALIBRATION_COIN_MIN_AREA_PX):
+            continue
+        if area > max_area:
             continue
 
         perimeter = cv2.arcLength(contour, True)
@@ -93,90 +125,57 @@ def detect_coin_candidate(frame_bgr):
             continue
 
         circularity = float((4.0 * np.pi * area) / (perimeter * perimeter))
-        (cx, cy), radius = cv2.minEnclosingCircle(contour)
-        radius = float(radius)
-        if radius < float(config.CALIBRATION_COIN_MIN_RADIUS_PX):
-            continue
-        if radius > float(config.CALIBRATION_COIN_MAX_RADIUS_PX):
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        solidity = float(area / hull_area) if hull_area > 0 else 0.0
+
+        if len(contour) < 5:
             continue
 
-        circle_area = float(np.pi * radius * radius)
-        if circle_area <= 0.0:
-            continue
-        fill_ratio = float(area / circle_area)
+        ellipse = cv2.fitEllipse(contour)
+        (cx, cy) = ellipse[0]
+        major_axis = float(max(ellipse[1]))
+        minor_axis = float(min(ellipse[1]))
 
-        edge_margin = float(radius * float(config.CALIBRATION_COIN_EDGE_MARGIN_RATIO))
+        if minor_axis <= 0.0:
+            continue
+        if major_axis < (2.0 * float(config.CALIBRATION_COIN_MIN_RADIUS_PX)):
+            continue
+        if major_axis > (2.0 * float(config.CALIBRATION_COIN_MAX_RADIUS_PX)):
+            continue
+
+        aspect_ratio = major_axis / max(minor_axis, 1e-6)
+        edge_margin = float((0.5 * (major_axis + minor_axis) * 0.5) * float(config.CALIBRATION_COIN_EDGE_MARGIN_RATIO))
         inside_frame = edge_margin <= cx <= (w - edge_margin) and edge_margin <= cy <= (h - edge_margin)
+        if not inside_frame:
+            continue
 
-        valid_shape = (
-            circularity >= float(config.CALIBRATION_COIN_MIN_CIRCULARITY)
-            and float(config.CALIBRATION_COIN_MIN_FILL_RATIO) <= fill_ratio <= float(config.CALIBRATION_COIN_MAX_FILL_RATIO)
-            and inside_frame
+        ellipse_area = float(np.pi * (major_axis * 0.5) * max(minor_axis * 0.5, 1e-6))
+        fill_ratio = float(area / ellipse_area) if ellipse_area > 0.0 else 0.0
+
+        valid_shape = bool(
+            solidity >= float(getattr(config, "CALIBRATION_COIN_MIN_SOLIDITY", 0.72))
+            and aspect_ratio <= float(getattr(config, "CALIBRATION_COIN_MAX_ASPECT_RATIO", 2.3))
+            and circularity >= float(config.CALIBRATION_COIN_MIN_CIRCULARITY)
+            and fill_ratio >= float(config.CALIBRATION_COIN_MIN_FILL_RATIO)
         )
-
-        score = (min(circularity, 1.25) * 2.0) + (1.0 - min(abs(fill_ratio - 1.0), 1.0)) + (radius * 0.002)
+        score = (area * 0.0025) + (solidity * 2.5) + (circularity * 1.5) + (1.2 / max(1.0, aspect_ratio))
         if score > best_score:
+            diameter_px = 0.5 * (major_axis + minor_axis)
             best_score = score
             best = {
                 "center": (int(round(cx)), int(round(cy))),
-                "radius": radius,
-                "diameter_px": radius * 2.0,
+                "radius": float(diameter_px * 0.5),
+                "diameter_px": float(diameter_px),
+                "major_axis": major_axis,
+                "minor_axis": minor_axis,
                 "circularity": circularity,
                 "fill_ratio": fill_ratio,
-                "valid_shape": bool(valid_shape),
+                "solidity": solidity,
+                "aspect_ratio": aspect_ratio,
+                "valid_shape": valid_shape,
                 "method": "contour",
             }
-
-    if best is not None and bool(best.get("valid_shape", False)):
-        return best
-
-    # Fallback: reflective coins can produce poor binary contours but still form
-    # strong circular edges. Use Hough circles so calibration can continue.
-    gray_hough = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    gray_hough = cv2.medianBlur(gray_hough, 5)
-    circles = cv2.HoughCircles(
-        gray_hough,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=max(24, int(min(h, w) * 0.12)),
-        param1=110,
-        param2=18,
-        minRadius=int(config.CALIBRATION_COIN_MIN_RADIUS_PX),
-        maxRadius=int(config.CALIBRATION_COIN_MAX_RADIUS_PX),
-    )
-
-    if circles is not None and len(circles) > 0:
-        hough_best = None
-        hough_score = -1e9
-        cx0 = w / 2.0
-        cy0 = h / 2.0
-
-        for circle in circles[0]:
-            cx, cy, radius = float(circle[0]), float(circle[1]), float(circle[2])
-            if radius <= 0:
-                continue
-
-            edge_margin = float(radius * float(config.CALIBRATION_COIN_EDGE_MARGIN_RATIO))
-            inside_frame = edge_margin <= cx <= (w - edge_margin) and edge_margin <= cy <= (h - edge_margin)
-            if not inside_frame:
-                continue
-
-            center_dist = float(np.hypot(cx - cx0, cy - cy0))
-            score = (radius * 0.03) - (center_dist * 0.01)
-            if score > hough_score:
-                hough_score = score
-                hough_best = {
-                    "center": (int(round(cx)), int(round(cy))),
-                    "radius": radius,
-                    "diameter_px": radius * 2.0,
-                    "circularity": 1.0,
-                    "fill_ratio": 1.0,
-                    "valid_shape": True,
-                    "method": "hough",
-                }
-
-        if hough_best is not None:
-            return hough_best
 
     return best
 
@@ -190,6 +189,11 @@ def draw_coin_overlay(frame_bgr, candidate: dict, accepted: bool):
     color = (50, 220, 50) if accepted else (0, 200, 255)
     cv2.circle(frame_bgr, center, radius, color, 2, cv2.LINE_AA)
     cv2.circle(frame_bgr, center, 3, color, -1, cv2.LINE_AA)
+    x0 = max(0, center[0] - radius)
+    y0 = max(0, center[1] - radius)
+    x1 = min(frame_bgr.shape[1] - 1, center[0] + radius)
+    y1 = min(frame_bgr.shape[0] - 1, center[1] + radius)
+    cv2.rectangle(frame_bgr, (x0, y0), (x1, y1), color, 1, cv2.LINE_AA)
 
     method = str(candidate.get("method", "contour")).upper()
     label = f"Coin {method} circ={candidate['circularity']:.3f} fill={candidate['fill_ratio']:.2f}"
@@ -259,9 +263,10 @@ def process_calibration_state(stage: int, cal_state: dict, frame, detector, out_
         draw_coin_overlay(frame, candidate, accepted)
 
         if not candidate["valid_shape"]:
+            aspect = float(candidate.get("aspect_ratio", 1.0))
             cal_state["message"] = (
-                f"Stage {stage}: coin not round enough "
-                f"(circ={candidate['circularity']:.3f})"
+                f"Stage {stage}: coin contour unstable "
+                f"(asp={aspect:.2f} circ={candidate['circularity']:.3f})"
             )
         elif not stable:
             cal_state["message"] = (
@@ -535,6 +540,11 @@ def main():
     cam1_stale_count = 0
     cam2_last_sig = None
     cam2_stale_count = 0
+    cam2_fail_count = 0
+    cam2_retry_after_ts = 0.0
+    cam2_fail_limit = max(1, int(getattr(config, "STAGE2_REOPEN_AFTER_FAILS", 5)))
+    cam2_retry_interval_sec = max(0.5, float(getattr(config, "STAGE2_RECONNECT_INTERVAL_SEC", 2.0)))
+    detection_every_n_frames = max(1, int(getattr(config, "DETECTION_EVERY_N_FRAMES", 2)))
     stale_limit_frames = 90
     manual_next_ready_ts = {"servo1": 0.0, "servo2": 0.0}
     manual_button_next_ready_ts = {"servo1": 0.0, "servo2": 0.0}
@@ -562,6 +572,10 @@ def main():
                 print(f"[buttons] init failed: {exc}. Physical tactile buttons disabled.")
 
     win_name = "Onion Sorting"
+    frame_index = 0
+    last_det1 = DetectionResult(stage_name="STAGE1")
+    last_det2 = DetectionResult(stage_name="STAGE2")
+    last_stage2_using_stage1 = False
 
     try:
         while True:
@@ -585,7 +599,7 @@ def main():
                     calibration_stage1 = new_cal_state()
                     calibration_stage1["active"] = True
                     calibration_stage1["target"] = target
-                    calibration_stage1["message"] = "Stage 1: place still 5-peso coin on black belt"
+                    calibration_stage1["message"] = "Stage 1: place still 20-peso coin on black belt"
                     calibration_stage1["started_at"] = now
                     print(f"[calibration] Stage 1 started (target={target})")
                 elif stage == 2:
@@ -595,7 +609,7 @@ def main():
                         calibration_stage2 = new_cal_state()
                         calibration_stage2["active"] = True
                         calibration_stage2["target"] = target
-                        calibration_stage2["message"] = "Stage 2: place still 5-peso coin on black belt"
+                        calibration_stage2["message"] = "Stage 2: place still 20-peso coin on black belt"
                         calibration_stage2["started_at"] = now
                         print(f"[calibration] Stage 2 started (target={target})")
 
@@ -681,9 +695,26 @@ def main():
 
             raw_stage1_frame = frame1.copy() if (ok1 and frame1 is not None) else None
             ok2, frame2 = (False, None)
+
+            # If stage2 camera is missing (e.g., unplug/replug), periodically retry opening it.
+            if cam2 is None and now >= cam2_retry_after_ts:
+                try:
+                    cam2 = open_camera(
+                        "stage2-camera",
+                        config.STAGE2_SOURCE,
+                        config.STAGE2_BACKEND,
+                        required=False,
+                    )
+                    if cam2 is not None:
+                        print("[camera] stage2-camera: recovered after reconnect")
+                except Exception:
+                    cam2 = None
+                cam2_retry_after_ts = now + cam2_retry_interval_sec
+
             if cam2 is not None:
                 ok2, frame2 = cam2.read()
                 if ok2 and frame2 is not None:
+                    cam2_fail_count = 0
                     sig2 = frame_signature(frame2)
                     if cam2_last_sig is not None and sig2 == cam2_last_sig:
                         cam2_stale_count += 1
@@ -712,13 +743,57 @@ def main():
                             ok2, frame2 = False, None
                         cam2_stale_count = 0
                         cam2_last_sig = None
+                        cam2_retry_after_ts = now + cam2_retry_interval_sec
+                else:
+                    cam2_fail_count += 1
+                    if cam2_fail_count >= cam2_fail_limit and now >= cam2_retry_after_ts:
+                        print("[camera] stage2-camera: repeated read failures, reopening stream")
+                        try:
+                            cam2.release()
+                        except Exception:
+                            pass
+                        cam2 = None
+                        try:
+                            cam2 = open_camera(
+                                "stage2-camera",
+                                config.STAGE2_SOURCE,
+                                config.STAGE2_BACKEND,
+                                required=False,
+                            )
+                        except Exception:
+                            cam2 = None
+                        if cam2 is not None:
+                            ok2, frame2 = cam2.read()
+                            if ok2 and frame2 is not None:
+                                print("[camera] stage2-camera: recovered after reopen")
+                                cam2_fail_count = 0
+                        cam2_retry_after_ts = now + cam2_retry_interval_sec
             raw_stage2_frame = frame2.copy() if (ok2 and frame2 is not None) else None
+
+            frame_index += 1
+            process_frame = (
+                bool(calibration_stage1["active"])
+                or bool(calibration_stage2["active"])
+                or (frame_index % detection_every_n_frames == 0)
+            )
 
             if not ok1 or frame1 is None:
                 frame1 = make_blank_frame(config.FRAME_WIDTH, config.FRAME_HEIGHT, "Stage1 camera not available")
                 det1 = DetectionResult(stage_name="STAGE1")
             else:
-                frame1, det1 = detector1.process(frame1, timestamp=now)
+                if process_frame:
+                    frame1, det1 = detector1.process(frame1, timestamp=now)
+                    last_det1 = det1
+                else:
+                    det1 = DetectionResult(
+                        stage_name="STAGE1",
+                        class_label=last_det1.class_label,
+                        diameter_cm=last_det1.diameter_cm,
+                        center=last_det1.center,
+                        radius_px=last_det1.radius_px,
+                        triggered=False,
+                    )
+                    frame1 = detector1.render_cached(frame1, det1)
 
             stage2_using_stage1 = False
             if not ok2 or frame2 is None:
@@ -740,7 +815,21 @@ def main():
                     frame2 = make_blank_frame(config.FRAME_WIDTH, config.FRAME_HEIGHT, "Stage2 camera not available")
                     det2 = DetectionResult(stage_name="STAGE2")
             else:
-                frame2, det2 = detector2.process(frame2, timestamp=now)
+                if process_frame:
+                    frame2, det2 = detector2.process(frame2, timestamp=now)
+                    last_det2 = det2
+                    last_stage2_using_stage1 = stage2_using_stage1
+                else:
+                    det2 = DetectionResult(
+                        stage_name="STAGE2",
+                        class_label=last_det2.class_label,
+                        diameter_cm=last_det2.diameter_cm,
+                        center=last_det2.center,
+                        radius_px=last_det2.radius_px,
+                        triggered=False,
+                    )
+                    stage2_using_stage1 = last_stage2_using_stage1
+                    frame2 = detector2.render_cached(frame2, det2)
 
             stage1_ppcm = process_calibration_state(
                 stage=1,
