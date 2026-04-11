@@ -106,6 +106,13 @@ class CameraStream:
         self._cap.set(cv2.CAP_PROP_FPS, self.fps)
         self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+        # USB webcams are more stable in dual-camera mode when using MJPG.
+        if isinstance(self.source, str) and self.source.startswith("/dev/"):
+            try:
+                self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            except Exception:
+                pass
+
         # Best-effort lock for stable view on USB cameras.
         if bool(getattr(config, "DISABLE_AUTOFOCUS", True)):
             try:
