@@ -7,6 +7,8 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+import config
+
 
 @dataclass
 class DetectionResult:
@@ -69,6 +71,10 @@ class StageDetector:
         self._last_center = None
         self._lost_frames = 0
 
+    def _fit_best_circle(self, contour: np.ndarray) -> Tuple[Tuple[float, float], float]:
+        center_enclosing, radius_enclosing = cv2.minEnclosingCircle(contour)
+        return center_enclosing, radius_enclosing
+
     def process(self, frame: np.ndarray, timestamp: Optional[float] = None) -> Tuple[np.ndarray, DetectionResult]:
         ts = timestamp if timestamp is not None else time.monotonic()
         display = frame.copy()
@@ -96,7 +102,9 @@ class StageDetector:
             self._draw_stage_label(display, result.class_label, result.diameter_cm)
             return display, result
 
-        (cx, cy), radius = cv2.minEnclosingCircle(contour)
+        # Use improved circle fitting for more accurate diameter
+        (cx, cy), radius = self._fit_best_circle(contour)
+        
         if radius <= 1.0:
             self._mark_lost()
             self._draw_stage_label(display, result.class_label, result.diameter_cm)
@@ -133,6 +141,24 @@ class StageDetector:
         self._draw_stage_label(display, class_label, diameter_cm)
         return display, result
 
+    def render_cached(self, frame: np.ndarray, result: DetectionResult) -> np.ndarray:
+        display = frame.copy()
+        h, w = display.shape[:2]
+        x0, y0, rw, rh = self._resolve_roi(w, h)
+
+        cv2.rectangle(display, (x0, y0), (x0 + rw, y0 + rh), (120, 120, 120), 1)
+        self._draw_trigger_line(display, x0, y0, rw, rh)
+
+        if result is not None and result.center is not None and float(result.radius_px) > 1.0:
+            color = self._class_color(result.class_label)
+            cv2.circle(display, result.center, int(result.radius_px), color, 2)
+            cv2.circle(display, result.center, 3, color, -1)
+
+        label = result.class_label if result is not None else "NO_OBJECT"
+        diameter_cm = result.diameter_cm if result is not None else 0.0
+        self._draw_stage_label(display, label, diameter_cm)
+        return display
+
     def _update_tracked_diameter(self, center: Tuple[int, int], diameter_cm: float) -> float:
         if self._last_center is not None:
             dx = float(center[0] - self._last_center[0])
@@ -164,37 +190,106 @@ class StageDetector:
         return x, y, w, h
 
     def _segment(self, roi_frame: np.ndarray) -> np.ndarray:
-        gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+        """
+        Lightweight onion segmentation.
+        Uses HSV red/purple mask plus glare-connected pixels.
+        """
         k = self._odd(self.blur_kernel_size)
-        gray = cv2.GaussianBlur(gray, (k, k), 0)
+        blurred = cv2.GaussianBlur(roi_frame, (k, k), 0)
+        hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+        sat = hsv[:, :, 1]
+        val = hsv[:, :, 2]
 
-        thresh_mode = cv2.THRESH_BINARY_INV if self.threshold_invert else cv2.THRESH_BINARY
-        _, mask = cv2.threshold(gray, 0, 255, thresh_mode | cv2.THRESH_OTSU)
+        h1_min = int(getattr(config, "ONION_HUE1_MIN", 0))
+        h1_max = int(getattr(config, "ONION_HUE1_MAX", 18))
+        h2_min = int(getattr(config, "ONION_HUE2_MIN", 125))
+        h2_max = int(getattr(config, "ONION_HUE2_MAX", 179))
+        sat_min = int(getattr(config, "ONION_SAT_MIN", 32))
+        val_min = int(getattr(config, "ONION_MIN_VALUE", 30))
+
+        mask_h1 = cv2.inRange(hsv, (h1_min, sat_min, val_min), (h1_max, 255, 255))
+        mask_h2 = cv2.inRange(hsv, (h2_min, sat_min, val_min), (h2_max, 255, 255))
+        mask_color = cv2.bitwise_or(mask_h1, mask_h2)
+
+        glare_min = int(getattr(config, "ONION_GLARE_VALUE_MIN", 235))
+        mask_glare = cv2.inRange(val, glare_min, 255)
+        connect_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        connected_color = cv2.dilate(mask_color, connect_kernel, iterations=1)
+        mask_glare_connected = cv2.bitwise_and(mask_glare, connected_color)
+
+        mask = cv2.bitwise_or(mask_color, mask_glare_connected)
 
         mk = self._odd(self.morph_kernel_size)
-        kernel = np.ones((mk, mk), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (mk, mk))
+
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
         return mask
 
     def _pick_best_contour(self, mask: np.ndarray):
+        """
+        Pick the largest valid onion contour.
+        """
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best = None
-        best_area = 0.0
+        h, w = mask.shape[:2]
+        max_area_ratio = float(getattr(config, "ONION_MAX_CONTOUR_AREA_RATIO", 0.35))
+        max_aspect_ratio = float(getattr(config, "ONION_MAX_ASPECT_RATIO", 2.20))
+        min_solidity = float(getattr(config, "ONION_MIN_SOLIDITY", 0.75))
+        min_fill_ratio = float(getattr(config, "ONION_MIN_FILL_RATIO", 0.35))
+        max_area = float(h * w) * max_area_ratio
+        candidates = []
+
         for c in contours:
             area = cv2.contourArea(c)
             if area < self.min_contour_area:
                 continue
+            if area > max_area:
+                continue
+
             peri = cv2.arcLength(c, True)
             if peri <= 0:
                 continue
+
             circularity = (4.0 * math.pi * area) / (peri * peri)
-            if not (self.circularity_min <= circularity <= self.circularity_max):
+            if circularity < 0.35:
                 continue
-            if area > best_area:
-                best = c
-                best_area = area
-        return best
+
+            hull = cv2.convexHull(c)
+            hull_area = cv2.contourArea(hull)
+            if hull_area <= 0:
+                continue
+            solidity = float(area / hull_area)
+            if solidity < min_solidity:
+                continue
+
+            rect = cv2.minAreaRect(c)
+            major = max(rect[1][0], rect[1][1])
+            minor = min(rect[1][0], rect[1][1])
+            if minor <= 0:
+                continue
+            aspect_ratio = float(major / minor)
+            if aspect_ratio > max_aspect_ratio:
+                continue
+
+            (cx, cy), radius = cv2.minEnclosingCircle(c)
+            if radius < 2.0:
+                continue
+
+            circle_area = math.pi * radius * radius
+            fill_ratio = area / circle_area if circle_area > 0 else 0
+            if fill_ratio < min_fill_ratio:
+                continue
+
+            score = area + (circularity * 200.0) + (solidity * 200.0) + (80.0 / max(1.0, aspect_ratio))
+            candidates.append((score, c))
+        
+        if not candidates:
+            return None
+        
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
 
     def _classify(self, diameter_cm: float) -> str:
         if self.stage_kind == "large_gate":
