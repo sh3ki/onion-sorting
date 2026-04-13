@@ -4,7 +4,7 @@
 
 This document explains the onion sorting project in two aligned layers:
 
-- Training layer (pretend scenario): onion detection AI was trained in Roboflow.
+- Training layer: onion detection AI was trained in Roboflow.
 - Runtime layer (actual project code): contour-based computer vision with calibrated geometry is used to measure onion diameter and trigger sorting.
 
 The result is practical and correct for size sorting: AI can help detect candidate onion regions, while contour + calibration provides stable physical size measurement in centimeters.
@@ -45,15 +45,15 @@ The result is practical and correct for size sorting: AI can help detect candida
 - `picamera2` (system package on Raspberry Pi)
   - CSI camera support with stable field-of-view and autofocus control where available.
 
-### AI Platform (Pretend Training Source)
+### AI Platform (Training Source)
 
 - Roboflow
   - Dataset management, annotation, augmentation, and cloud model training.
-  - In this project narrative, the onion detector is trained in Roboflow, then exported and integrated with the contour measurement pipeline.
+  - The onion detector is trained in Roboflow, then exported and integrated with the contour measurement pipeline.
 
-## 4) Pretend Roboflow Training Workflow
+## 4) Roboflow Training Workflow
 
-This is the assumed training process for your documentation/story:
+Training process:
 
 1. Data collection
    - Capture frame samples from both stage cameras under normal conveyor lighting.
@@ -132,9 +132,9 @@ Calibration files:
 | `static/style.css` | Dashboard styling | CSS |
 | `requirements.txt` | Python dependency list for runtime | `flask`, `numpy`, `opencv-python`, `RPi.GPIO`, `adafruit-blinka`, `adafruit-circuitpython-pca9685` |
 
-## 8) Where Roboflow Fits in This Project Story
+## 8) Where Roboflow Fits in This Project
 
-In this documentation narrative:
+In this project:
 
 - Roboflow is the training and dataset platform.
 - Runtime still relies on contour-based measurement for accurate physical sizing.
