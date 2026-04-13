@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Start Onion Sorting
+Comment=Run onion sorting app and kiosk
+Path=/home/onion/onion-sorting
+Exec=/bin/bash -lc 'cd /home/onion/onion-sorting && ./start_app_kiosk.sh'
+Terminal=true
+Icon=utilities-terminal
+Categories=Utility;
