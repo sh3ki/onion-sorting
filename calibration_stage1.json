@@ -1,9 +1,0 @@
-{
-  "pixels_per_cm": 45.0,
-  "coin_diameter_cm": 2.5,
-  "coin_diameter_mm": 25,
-  "sample_count": 0,
-  "mean_coin_diameter_px": 112.5,
-  "std_coin_diameter_px": 0.0,
-  "created_at": "1970-01-01T00:00:00Z"
-}
